@@ -20,7 +20,7 @@ Oct 30 12:00:05 living-room-tv cleanyourtv: {"detail":"It can read the screen an
 | `event` | `audit_summary`, `audit_finding`, `adb_close`, and from the watchdog `adb_usb`, `adb_wireless`, `adb_network`, `adb_persistent`, `adb_port_stuck`, `adb_closed`, `accessibility`, `notification_access`, `device_admin`, `keyboard`, `proxy`, `private_dns`, `app_installed`, `app_removed`, `verifier_off`, … |
 | `severity` | `high`, `medium`, `low`, `info` |
 | `device` | The name given with `--device-name` or `device_name` (default: the TV's model) |
-| `id` | Audit findings only: `ADB-001`, `PRM-001`, … (the full list is in `tools/security_audit.py`) |
+| `id`, `finding` | Audit findings only: `ADB-001`, `PRM-001`, … (the full list is in `tools/security_audit.py`). Rules match `finding`, as Wazuh keeps `id` as a static field |
 | `package` | The app concerned, when there is one |
 | `origin` | `watchdog` for the add-on's events |
 
@@ -56,6 +56,7 @@ and give the watchdog `"syslog": ["syslog+udp://<wazuh ip>:514"]` in its config.
 | 100711 | 12 | An app given accessibility, notification access or device admin (high only: your own apps are info) |
 | 100712 | 12 | Web traffic sent through a proxy |
 | 100713 | 12 | `adb_autoclose.py` switched debugging off but the port still answers |
+| 100714 | 12 | A high audit finding of the same kinds: no ADB prompt, persistent ADB port, debug build, SELinux off, proxy, accessibility, notification access, device admin |
 | 100720 | 3 | An audit ran (one summary per run; alert on its absence if you schedule audits) |
 | 100730 | 10 | Three sideloaded installs on one TV within 10 minutes |
 

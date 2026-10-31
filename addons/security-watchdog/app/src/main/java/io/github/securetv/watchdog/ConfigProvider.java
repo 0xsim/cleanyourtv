@@ -5,52 +5,52 @@ import android.content.ContentValues;
 import android.database.Cursor;
 import android.database.MatrixCursor;
 import android.net.Uri;
+import android.os.Binder;
 import android.os.Build;
-import android.os.Handler;
-import android.os.Looper;
-import android.os.ParcelFileDescriptor;
+import android.util.Base64;
 
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
 /**
- * The shell's way in, for install.sh and the host tools. Only callers holding WRITE_SECURE_SETTINGS
- * reach it (the manifest says so), which on a TV means ADB. No app can read or change anything here.
+ * The shell's way in, for install.sh and the host tools:
  *
- *   content write --uri content://io.github.securetv.watchdog.config/config.json   push a new config
- *   content query --uri content://io.github.securetv.watchdog.config/status        did it take?
- *   content query --uri content://io.github.securetv.watchdog.config/events        the newest events
+ *   content insert --uri content://io.github.securetv.watchdog.config/config --bind b64:s:<base64 of config.json>
+ *   content query  --uri content://io.github.securetv.watchdog.config/status
+ *   content query  --uri content://io.github.securetv.watchdog.config/events
+ *
+ * Two locks: the manifest requires WRITE_SECURE_SETTINGS, and every call checks that the caller is the
+ * shell (ADB) or root. The second matters because other apps can hold WRITE_SECURE_SETTINGS too (vendor
+ * system apps, or an add-on that install.sh granted it to). `content insert` exists on every Android
+ * this app runs on, unlike `content write`, so no version needs a file in shared storage.
  *
  * A pushed config is checked before it replaces the old one, so a typo never switches reporting off.
  */
 public class ConfigProvider extends ContentProvider {
     static final String NAME = "config.json";
-    private static final String INCOMING = "config.json.incoming";
     private static final String STATUS = "config_status.txt";
+    private static final int SHELL_UID = 2000;
+    private static final int ROOT_UID = 0;
 
-    @Override
-    public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
-        if (!mode.contains("w") || !NAME.equals(uri.getLastPathSegment())) throw new FileNotFoundException(uri.toString());
-        Store store = new Store(getContext().getFilesDir());
-        File incoming = store.file(INCOMING);
-        try {
-            return ParcelFileDescriptor.open(incoming,
-                    ParcelFileDescriptor.MODE_WRITE_ONLY | ParcelFileDescriptor.MODE_CREATE | ParcelFileDescriptor.MODE_TRUNCATE,
-                    new Handler(Looper.getMainLooper()),
-                    e -> {
-                        if (e == null) accept(store, incoming);
-                    });
-        } catch (IOException e) {
-            throw new FileNotFoundException(e.getMessage());
-        }
+    private static void requireShell() {
+        int uid = Binder.getCallingUid();
+        if (uid != SHELL_UID && uid != ROOT_UID) throw new SecurityException("only ADB may use this provider");
     }
 
-    private void accept(Store store, File incoming) {
-        String text = store.read(INCOMING);
-        //noinspection ResultOfMethodCallIgnored
-        incoming.delete();
-        if (text != null && install(store, text)) WatchdogService.send(getContext(), WatchdogService.ACTION_RELOAD);
+    @Override
+    public Uri insert(Uri uri, ContentValues values) {
+        requireShell();
+        if (!"config".equals(uri.getLastPathSegment()) || values == null) return null;
+        String b64 = values.getAsString("b64");
+        Store store = new Store(getContext().getFilesDir());
+        String text;
+        try {
+            text = new String(Base64.decode(b64 == null ? "" : b64, Base64.DEFAULT), StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException e) {
+            store.write(STATUS, "error: the config was not valid base64");
+            return null;
+        }
+        if (install(store, text)) WatchdogService.send(getContext(), WatchdogService.ACTION_RELOAD);
+        return uri;
     }
 
     /** Checks a pushed config and, only if it parses, makes it the one in use. Records the outcome. */
@@ -58,7 +58,7 @@ public class ConfigProvider extends ContentProvider {
         try {
             Config.parse(text, Build.MODEL);
         } catch (IllegalArgumentException bad) {
-            store.write(STATUS, "error: " + bad.getMessage());
+            store.write(STATUS, "error: " + bad.getMessage());   // Config's messages never carry a password
             return false;
         }
         store.write(NAME, text);
@@ -66,30 +66,9 @@ public class ConfigProvider extends ContentProvider {
         return true;
     }
 
-    /**
-     * Android 8 and 9 have no `content write`, so install.sh copies config.json into the app's external
-     * folder instead. Other apps with storage access can read that folder on those versions, so the file
-     * is taken in and deleted as soon as the service starts or reloads.
-     */
-    static void importExternal(android.content.Context context, Store store) {
-        File dir = context.getExternalFilesDir(null);
-        if (dir == null) return;
-        File pushed = new File(dir, NAME);
-        if (!pushed.isFile()) return;
-        try {
-            String text = new String(java.nio.file.Files.readAllBytes(pushed.toPath()),
-                    java.nio.charset.StandardCharsets.UTF_8);
-            install(store, text);
-        } catch (IOException e) {
-            store.write(STATUS, "error: could not read the pushed config.json");
-        } finally {
-            //noinspection ResultOfMethodCallIgnored
-            pushed.delete();
-        }
-    }
-
     @Override
     public Cursor query(Uri uri, String[] projection, String selection, String[] args, String sortOrder) {
+        requireShell();
         Store store = new Store(getContext().getFilesDir());
         String what = uri.getLastPathSegment();
         if ("status".equals(what)) {
@@ -115,11 +94,6 @@ public class ConfigProvider extends ContentProvider {
 
     @Override
     public String getType(Uri uri) {
-        return null;
-    }
-
-    @Override
-    public Uri insert(Uri uri, ContentValues values) {
         return null;
     }
 

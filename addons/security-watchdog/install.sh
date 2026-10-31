@@ -47,11 +47,13 @@ tv "pm grant $PKG android.permission.POST_NOTIFICATIONS 2>/dev/null; true"
 tv "cmd appops set $PKG AUTO_START allow 2>/dev/null; cmd appops set $PKG APP_AUTO_START allow 2>/dev/null; appops write-settings 2>/dev/null; true"
 
 if [ -n "$CONFIG" ]; then
-  STAGE=/data/local/tmp/security-watchdog-config.json
-  "$PY" -I ../../tools/b64push.py "$CONFIG" "$STAGE" >/dev/null
-  # Android 8 and 9 have no `content write`: they print the usage or "Unsupported operation", so fall back to
-  # the app's external folder, which the app empties as soon as it reads it.
-  tv "o=\$(content write --uri content://$PKG.config/config.json < $STAGE 2>&1); case \"\$o\" in *'Unsupported operation'*|*'Error'*|*'usage'*) mkdir -p /sdcard/Android/data/$PKG/files && cp $STAGE /sdcard/Android/data/$PKG/files/config.json && echo 'config copied (Android 8/9)';; *) echo 'config pushed';; esac; rm -f $STAGE"
+  # One path for every Android version: `content insert` with the file base64-encoded, sent on stdin
+  # (--batch) so it never shows in this computer's process list. Only ADB may call the provider.
+  B64=$("$PY" -I -c 'import base64, sys; print(base64.b64encode(open(sys.argv[1], "rb").read()).decode())' "$CONFIG")
+  # --batch echoes each command it runs; that line holds the encoded config, so it is dropped here.
+  printf '%s\n' "content insert --uri content://$PKG.config/config --bind b64:s:$B64 && echo 'config sent'" \
+    | tv --batch | grep -v '^\$ content insert' || true
+  unset B64
 fi
 
 tv "am start -n $PKG/.MainActivity >/dev/null; echo opened"

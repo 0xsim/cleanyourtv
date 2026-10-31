@@ -122,6 +122,24 @@ class EncodingTest(unittest.TestCase):
         self.assertNotIn("s3cret", target.redacted())
         self.assertEqual((target.user, target.password, target.port), ("me", "s3cret", 1883))
 
+    def test_passwords_with_url_characters_stay_hidden(self):
+        for url in ("mqtt://tv:pa/ss@broker:1883", "mqtt://tv:a@b#c?d@broker", "mqtt://tv:x/y@h:99999"):
+            self.assertNotIn("pa/ss", ig.redact(url))
+            self.assertNotIn("a@b#c", ig.redact(url))
+            self.assertNotIn("x/y", ig.redact(url))
+            self.assertTrue(ig.redact(url).startswith("mqtt://tv:***@"), ig.redact(url))
+            problems = ig.export_audit(report(), [], url)
+            self.assertEqual(len(problems), 1)
+            for secret in ("pa/ss", "a@b#c", "x/y"):
+                self.assertNotIn(secret, problems[0])
+        encoded = ig.Target("mqtt://tv:pa%2Fss@broker")
+        self.assertEqual((encoded.password, encoded.host), ("pa/ss", "broker"))
+
+    def test_bad_facility_is_a_problem_not_a_crash(self):
+        problems = ig.export_event({"event": "x"}, ["syslog+udp://127.0.0.1:9?facility=nope"], None, "tv")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("facility", problems[0])
+
     def test_target_refusals(self):
         for url in ("http://x", "syslog+udp://", "mqtt://h:99999", "nonsense"):
             with self.assertRaises(ValueError, msg=url):
@@ -155,6 +173,8 @@ class SyslogTest(unittest.TestCase):
         self.assertEqual(bodies[0]["device"], "Living Room TV")
         ids = {b["id"] for b in bodies[1:]}
         self.assertIn("ADB-001", ids)
+        self.assertTrue(all(b["finding"] == b["id"] for b in bodies[1:]))
+        self.assertEqual(bodies[0]["severity"], "info")
         self.assertTrue(all(b["source"] == "cleanyourtv" for b in bodies))
 
     def test_tcp_lines_are_newline_framed(self):

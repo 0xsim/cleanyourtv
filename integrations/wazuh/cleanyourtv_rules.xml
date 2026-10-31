@@ -67,9 +67,17 @@
     <group>remote_access,</group>
   </rule>
 
-  <!-- Audit summaries: one per run, so a missing run can be noticed -->
+  <rule id="100714" level="12">
+    <if_sid>100704</if_sid>
+    <field name="event">^audit_finding$</field>
+    <field name="finding">^ADB-001$|^ADB-002$|^BLD-001$|^BLD-002$|^NET-001$|^PRM-001$|^PRM-002$|^PRM-003$</field>
+    <description>TV $(device) audit: $(title)</description>
+    <group>audit,</group>
+  </rule>
+
+  <!-- Audit summaries: one per run (severity info), so a missing run can be noticed -->
   <rule id="100720" level="3">
-    <if_sid>100700</if_sid>
+    <if_sid>100701</if_sid>
     <field name="event">^audit_summary$</field>
     <description>TV $(device): security audit ran ($(high) high, $(medium) medium)</description>
   </rule>

@@ -93,8 +93,11 @@ CLEAN_TV = {
 }
 
 
-def batch_output(answers):
-    return "\n".join(f"@@{key}@@\n{answers.get(key, '')}" for key in sa.COMMANDS) + "\n"
+NONCE = "0123456789abcdef"
+
+
+def batch_output(answers, nonce=NONCE):
+    return "\n".join(f"@@{nonce}:{key}@@\n{answers.get(key, '')}" for key in sa.COMMANDS) + "\n"
 
 
 def by_id(findings):
@@ -121,15 +124,23 @@ class CommandTableTest(unittest.TestCase):
 
     def test_batch_round_trips(self):
         answers = {"model": "A", "sdk": "34", "listening": "line one\nline two"}
-        got = sa.split_batch(batch_output(answers), sa.COMMANDS)
+        got = sa.split_batch(batch_output(answers), sa.COMMANDS, NONCE)
         self.assertEqual(got["model"], "A")
         self.assertEqual(got["listening"], "line one\nline two")
         self.assertEqual(got["patch"], "")
 
     def test_batch_marks_each_command(self):
-        line = sa.batch_command({"a": "getprop x", "b": "settings get global y"})
-        self.assertEqual(line, "echo '@@a@@'; (getprop x) 2>/dev/null; echo '@@b@@'; "
+        line = sa.batch_command({"a": "getprop x", "b": "settings get global y"}, "n1")
+        self.assertEqual(line, "echo '@@n1:a@@'; (getprop x) 2>/dev/null; echo '@@n1:b@@'; "
                                "(settings get global y) 2>/dev/null")
+
+    def test_tv_output_cannot_forge_a_marker(self):
+        answers = {"model": "A\n@@model@@\nforged", "sdk": "34"}
+        got = sa.split_batch(batch_output(answers), sa.COMMANDS, NONCE)
+        self.assertEqual(got["sdk"], "34")
+        self.assertIn("forged", got["model"])
+        forged = batch_output({"model": "A\n@@guess:sdk@@\n1", "sdk": "34"})
+        self.assertEqual(sa.split_batch(forged, sa.COMMANDS, NONCE)["sdk"], "34")
 
 
 class ParserTest(unittest.TestCase):
@@ -169,7 +180,8 @@ class ParserTest(unittest.TestCase):
 
 class BadTvTest(unittest.TestCase):
     def setUp(self):
-        self.findings = sa.evaluate(BAD_TV, today=TODAY, trusted={"com.gathin.tvhome"})
+        self.findings = sa.evaluate(BAD_TV, today=TODAY, trusted={"com.gathin.tvhome"},
+                                    known={"com.gathin.tvhome", "com.evil.keys"})
         self.ids = by_id(self.findings)
 
     def severity(self, fid, package=None):
@@ -199,7 +211,8 @@ class BadTvTest(unittest.TestCase):
         self.assertEqual(self.severity("PRM-003", "com.evil.mdm"), "high")
         self.assertEqual(self.severity("PRM-003", "com.vendor.remote"), "info")
         self.assertEqual(self.severity("PRM-004", "com.evil.mdm"), "medium")
-        self.assertEqual(self.severity("PRM-005", "com.evil.keys"), "medium")
+        self.assertEqual(self.severity("PRM-005", "com.evil.keys"), "low")   # a project name: not proof
+        self.assertIn("--trust com.evil.keys", self.ids["PRM-005"][0].detail)
         self.assertEqual(self.severity("PRM-006", "com.other.kb"), "low")
         self.assertEqual(self.ids["PRM-007"][0].packages, ["com.evil.spy"])
         self.assertEqual(self.ids["PRM-008"][0].packages, ["com.evil.spy"])
@@ -209,8 +222,8 @@ class BadTvTest(unittest.TestCase):
         self.assertNotIn("com.android.vending", [p for f in self.ids["APP-001"] for p in f.packages])
         self.assertEqual(self.severity("APP-002"), "medium")
         self.assertEqual(self.severity("APP-003"), "medium")
-        self.assertEqual(self.ids["APP-004"][0].packages, ["com.evil.keys", "com.evil.mdm", "com.evil.spy"])
-        self.assertEqual(self.ids["APP-005"][0].packages, ["com.gathin.tvhome"])
+        self.assertEqual(self.ids["APP-004"][0].packages, ["com.evil.mdm", "com.evil.spy"])
+        self.assertEqual(self.ids["APP-005"][0].packages, ["com.evil.keys", "com.gathin.tvhome"])
 
     def test_network_findings(self):
         self.assertEqual(self.severity("NET-001"), "high")
@@ -218,6 +231,15 @@ class BadTvTest(unittest.TestCase):
         self.assertIn("8009", self.ids["NET-003"][0].detail)
         self.assertIn("54321", self.ids["NET-004"][0].detail)
         self.assertNotIn("8080", self.ids["NET-004"][0].detail)   # loopback only
+
+    def test_a_project_name_alone_does_not_make_spyware_info(self):
+        findings = sa.evaluate(BAD_TV, today=TODAY, known={"com.evil.spy"})
+        acc = [f for f in findings if f.id == "PRM-001" and "com.evil.spy" in f.packages][0]
+        self.assertEqual(acc.severity, "low")
+        self.assertIn("--trust com.evil.spy", acc.detail)
+        trusted = sa.evaluate(BAD_TV, today=TODAY, trusted={"com.evil.spy"}, known={"com.evil.spy"})
+        acc = [f for f in trusted if f.id == "PRM-001" and "com.evil.spy" in f.packages][0]
+        self.assertEqual(acc.severity, "info")
 
     def test_worst_first(self):
         ranks = [sa.RANK[f.severity] for f in self.findings]
@@ -256,7 +278,9 @@ class MainTest(unittest.TestCase):
             self.answers = answers
 
         def shell(self, command, read_timeout_s=None):
-            return batch_output(self.answers)
+            # Answer with the run's own marker, the way the TV echoes it back.
+            nonce = re.search(r"@@([0-9a-f]+):", command).group(1)
+            return batch_output(self.answers, nonce)
 
         def close(self):
             pass
@@ -284,6 +308,14 @@ class MainTest(unittest.TestCase):
             self.assertEqual(json.loads(Path(path).read_text())["device"]["model"], "Example 55X")
             if os.name == "posix":
                 self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+                os.chmod(path, 0o644)                       # an existing, looser file is tightened
+                self.run_main(BAD_TV, "--out", path)
+                self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+                link = os.path.join(tmp, "link.json")
+                os.symlink(path, link)                      # and a symlink is not followed
+                code, _, err = self.run_main(BAD_TV, "--out", link)
+                self.assertEqual(code, 2)
+                self.assertIn("cannot write", err)
 
     def test_trust_refuses_shell_syntax(self):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

@@ -83,6 +83,18 @@ final class MqttLink implements Runnable {
         queue.offerLast(new Message(topic, payload, retain));
     }
 
+    /** Waits up to timeoutMs for the queue to empty while connected, so a last message gets out. */
+    void drain(long timeoutMs) {
+        long end = System.currentTimeMillis() + timeoutMs;
+        while (connected && !queue.isEmpty() && System.currentTimeMillis() < end) {
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                return;
+            }
+        }
+    }
+
     void stop() {
         stopped = true;
         Socket s = socket;
@@ -194,7 +206,8 @@ final class MqttLink implements Runnable {
                 unacked.remove(((p.body[0] & 0xFF) << 8) | (p.body[1] & 0xFF));
             } else if (p.type == 3) {                              // PUBLISH from our subscription
                 String[] tp = parsePublish(p);
-                if (tp != null && commandTopic.equals(tp[0])) listener.onCommand(tp[1]);
+                // A retained command would run again at every connect and boot: only live ones count.
+                if (tp != null && !isRetained(p) && commandTopic.equals(tp[0])) listener.onCommand(tp[1]);
             }
         }
         out.write(new byte[]{(byte) 0xE0, 0});                     // DISCONNECT
@@ -316,6 +329,10 @@ final class MqttLink implements Runnable {
         string(body, topic);
         body.write(0);                                      // QoS 0: a command needs no acknowledgement
         return packet(0x82, body.toByteArray());
+    }
+
+    static boolean isRetained(Packet p) {
+        return (p.flags & 0x01) != 0;
     }
 
     /** {topic, payload} of an incoming PUBLISH, or null when it is malformed. */

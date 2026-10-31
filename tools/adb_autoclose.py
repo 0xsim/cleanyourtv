@@ -8,7 +8,9 @@
     --keep-usb              keep USB debugging: switch Wireless debugging off and reboot the TV, which
                             drops the plaintext TCP port (adb tcpip) without touching the USB switch
     --wireless-port N       also check Wireless debugging's own port (adb mdns services shows it)
-    --check-host IP         the TV's own address, when TV_HOST points at tools/relay.py (127.0.0.1)
+    --check-host IP         the TV's own address, when TV_HOST points at tools/relay.py (127.0.0.1);
+                            the port checked there is 5555 unless --check-port says otherwise
+    --check-port N          the TV's own ADB port to check (default: TV_PORT, or 5555 with --check-host)
     --syslog URL / --mqtt URL / --device-name NAME
                             report the result to a SIEM or Home Assistant (see tools/integrations.py)
 
@@ -28,6 +30,7 @@ from the TV itself after a timeout, which keeps working if this computer goes aw
 import argparse
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -41,6 +44,16 @@ CLOSE_KEEP_USB = "settings put global adb_wifi_enabled 0; sync; svc power reboot
 STATE = ("echo adb=$(settings get global adb_enabled) wifi=$(settings get global adb_wifi_enabled) "
          "tcp=$(getprop service.adb.tcp.port)")
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
+DEFAULT_ADB_PORT = 5555
+REBOOT_WAIT_S = 90.0     # --keep-usb: adbd stops early in shutdown, so a refusal then proves nothing
+
+
+def say(*args, **kwargs):
+    """print(), but a terminal that went away (SIGHUP) must not stop the close that follows."""
+    try:
+        print(*args, **kwargs)
+    except OSError:
+        pass
 
 
 def parse_duration(text):
@@ -58,7 +71,12 @@ def parse_duration(text):
 def tv_endpoint():
     """(host, port) from TV_HOST and TV_PORT, the way tools/tv.py reads them."""
     sys.path.insert(0, str(HERE))
-    import tv
+    try:
+        import tv
+    except SystemExit as e:          # tv.py exits with a message when TV_HOST is missing or bad
+        if e.code not in (None, 0):
+            say(e.code, file=sys.stderr)
+        raise SystemExit(2)
     return tv.HOST, tv.PORT
 
 
@@ -106,7 +124,7 @@ def verify(host, ports, wait_s=20.0, step_s=2.0, check=port_state, sleep=time.sl
     return results
 
 
-def close_and_verify(args, host, port, connect_fn=connect, check=port_state):
+def close_and_verify(args, host, port, connect_fn=connect, check=port_state, sleep=time.sleep):
     """Close debugging on the TV and check the ports. Returns (exit code, event for the exports)."""
     event = {"event": "adb_close", "mode": args.mode, "keep_usb": args.keep_usb}
     try:
@@ -123,30 +141,36 @@ def close_and_verify(args, host, port, connect_fn=connect, check=port_state):
         except Exception:
             event.setdefault("before", {})
         send_close(dev, args.keep_usb)
-        print("debugging switched off" + (" (rebooting to drop the TCP port)" if args.keep_usb else ""))
+        say("debugging switched off" + (" (rebooting to drop the TCP port)" if args.keep_usb else ""))
     ports = [port] + ([args.wireless_port] if args.wireless_port else [])
-    wait = 120.0 if args.keep_usb else 20.0
-    results = verify(host, ports, wait_s=wait, check=check)
+    wait = 20.0
+    if args.keep_usb and dev is not None:
+        # Check the TV after it has restarted, not while it shuts down: the port refuses early in
+        # shutdown, and a persist.adb.tcp.port would open it again at boot.
+        say(f"waiting {REBOOT_WAIT_S:g} s for the TV to restart", flush=True)
+        sleep(REBOOT_WAIT_S)
+        wait = 180.0
+    results = verify(host, ports, wait_s=wait, check=check, sleep=sleep)
     event["ports"] = {str(p): {0: "closed", 1: "open", 2: "unknown"}[code] for p, (code, _) in results.items()}
     codes = [code for code, _ in results.values()]
     for p, (code, message) in results.items():
-        print(f"port {p}: {message}" if message else f"port {p}: {event['ports'][str(p)]}")
+        say(f"port {p}: {message}" if message else f"port {p}: {event['ports'][str(p)]}")
     if 1 in codes:
         event["result"] = "still_open"
         event["title"] = "Debugging was switched off but the ADB port still answers"
-        print("The TV still accepts ADB. On this TV another switch keeps it open: turn USB debugging, "
+        say("The TV still accepts ADB. On this TV another switch keeps it open: turn USB debugging, "
               "Network/ADB debugging and Wireless debugging off in Developer options, then run "
               "this again.", file=sys.stderr)
         return 1, event
     if 2 in codes:
         event["result"] = "unknown"
         event["title"] = "Debugging switched off; the port could not be checked"
-        print("Could not confirm the port is closed (the TV did not answer). Check again once it is on.",
+        say("Could not confirm the port is closed (the TV did not answer). Check again once it is on.",
               file=sys.stderr)
         return 2, event
     event["result"] = "closed"
     event["title"] = "Debugging switched off and the ADB port is closed"
-    print("Closed. Also revoke the trusted computers once: Developer options > Revoke USB debugging "
+    say("Closed. Also revoke the trusted computers once: Developer options > Revoke USB debugging "
           "authorisations.")
     return 0, event
 
@@ -159,7 +183,7 @@ def report(args, event):
         return
     name = args.device_name or event.get("model") or "tv"
     for problem in integrations.export_event(event, syslog_urls, mqtt_url, name):
-        print(f"export: {problem}", file=sys.stderr)
+        say(f"export: {problem}", file=sys.stderr)
 
 
 def parse_args(argv):
@@ -174,6 +198,7 @@ def parse_args(argv):
     p.add_argument("--keep-usb", action="store_true", help="keep USB debugging; reboot to drop TCP")
     p.add_argument("--wireless-port", type=int, help="Wireless debugging's port, to check as well")
     p.add_argument("--check-host", help="the TV's own IP when TV_HOST is a relay on 127.0.0.1")
+    p.add_argument("--check-port", type=int, help="the TV's own ADB port to check (default 5555 with --check-host)")
     p.add_argument("--device-name", help="the TV's name in syslog and Home Assistant")
     p.add_argument("--syslog", action="append", default=[], metavar="URL")
     p.add_argument("--mqtt", metavar="URL")
@@ -199,30 +224,50 @@ def check_host(args, host):
     if args.check_host:
         return args.check_host
     if host in LOOPBACK:
-        raise SystemExit("TV_HOST is a relay on this computer, so the TV's own port cannot be checked "
-                         "there: add --check-host <tv ip>.")
+        say("TV_HOST is a relay on this computer, so the TV's own port cannot be checked there: "
+            "add --check-host <tv ip>.", file=sys.stderr)
+        raise SystemExit(2)
     return host
+
+
+def check_port(args, port):
+    """The TV's own port. With --check-host the endpoint's port is the relay's, so it is not used."""
+    if args.check_port:
+        return args.check_port
+    return DEFAULT_ADB_PORT if args.check_host else port
+
+
+class _Stop(Exception):
+    """SIGTERM or SIGHUP: unwind like Ctrl-C, so `run` still closes debugging on the way out."""
+
+
+def _raise_stop(signum, frame):
+    raise _Stop(signum)
 
 
 def main(argv=None, connect_fn=connect, check=port_state, sleep=time.sleep):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     host, port = tv_endpoint()
     target = check_host(args, host)
+    port = check_port(args, port)
+    for name in ("SIGTERM", "SIGHUP"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), _raise_stop)
     if args.mode == "now":
-        code, event = close_and_verify(args, target, port, connect_fn, check)
+        code, event = close_and_verify(args, target, port, connect_fn, check, sleep)
         report(args, event)
         return code
     if args.mode == "after":
         minutes = args.seconds / 60
-        print(f"Debugging will be switched off in {minutes:g} minute(s). Ctrl-C cancels "
+        say(f"Debugging will be switched off in {minutes:g} minute(s). Ctrl-C cancels "
               "(and leaves it on).", flush=True)
         try:
             sleep(args.seconds)
-        except KeyboardInterrupt:
-            print("\nCancelled: debugging is still on. Close it with: "
+        except (KeyboardInterrupt, _Stop):
+            say("\nCancelled: debugging is still on. Close it with: "
                   "tools/venv/bin/python -I tools/adb_autoclose.py now", file=sys.stderr)
             return 130
-        code, event = close_and_verify(args, target, port, connect_fn, check)
+        code, event = close_and_verify(args, target, port, connect_fn, check, sleep)
         report(args, event)
         return code
     # run: the command gets the same environment (TV_HOST, TV_PORT), and closing happens even when it
@@ -230,14 +275,14 @@ def main(argv=None, connect_fn=connect, check=port_state, sleep=time.sleep):
     child = 1
     try:
         child = subprocess.call(args.command)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, _Stop):
         child = 130
     except OSError as e:
-        print(f"could not run {args.command[0]}: {e}", file=sys.stderr)
+        say(f"could not run {args.command[0]}: {e}", file=sys.stderr)
         child = 127
     finally:
-        print(f"command finished ({child}); closing debugging", flush=True)
-        code, event = close_and_verify(args, target, port, connect_fn, check)
+        say(f"command finished ({child}); closing debugging", flush=True)
+        code, event = close_and_verify(args, target, port, connect_fn, check, sleep)
         event["command_exit"] = child
         report(args, event)
     return child if code == 0 else code

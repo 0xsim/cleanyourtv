@@ -16,6 +16,7 @@ Targets
   mqtt://user:pass@host[:1883]    MQTT 3.1.1; mqtts://...:8883 over TLS (?ca=FILE for your own CA)
   options: ?base=cleanyourtv (topic prefix), ?discovery=homeassistant (prefix; "off" to skip)
 
+Percent-encode / ? # @ and : in a user name or password (%2F %3F %23 %40 %3A).
 A password on the command line ends up in your shell history and the process list, so the same URLs
 can come from the environment instead: CLEANYOURTV_SYSLOG (comma-separated) and CLEANYOURTV_MQTT.
 
@@ -46,6 +47,12 @@ SYSLOG_SEVERITY = {"high": 3, "medium": 4, "low": 5, "info": 6}
 TIMEOUT_S = 10.0
 
 
+def redact(url):
+    """Hides everything between the user name and the last '@', so a password holding '/', '?', '#' or
+    '@' is still hidden whole. Used for every URL that reaches a message."""
+    return re.sub(r"://([^:/@]*):.*@(?=[^@]*$)", r"://\1:***@", url or "")
+
+
 def slug(name):
     """A topic- and hostname-safe form of the TV's name: living-room-tv -> living_room_tv."""
     text = re.sub(r"[^a-z0-9]+", "_", (name or "").lower()).strip("_")
@@ -66,18 +73,18 @@ class Target:
         self.password = unquote(parts.password) if parts.password else None
         defaults = {"syslog+udp": 514, "syslog+tcp": 514, "syslog+tls": 6514, "mqtt": 1883, "mqtts": 8883}
         if self.scheme not in defaults:
-            raise ValueError(f"unknown target {self.scheme or url!r}: use syslog+udp, syslog+tcp, "
+            raise ValueError(f"unknown target {self.scheme or redact(url)!r}: use syslog+udp, syslog+tcp, "
                              "syslog+tls, mqtt or mqtts")
         if not self.host:
-            raise ValueError(f"no host in {self.redacted()}")
+            raise ValueError(f"no host in {self.redacted()} (percent-encode / ? # @ in a password)")
         try:
             self.port = parts.port or defaults[self.scheme]
         except ValueError:
-            raise ValueError(f"bad port in {self.redacted()}")
+            raise ValueError(f"bad port in {self.redacted()} (percent-encode / ? # @ in a password)")
 
     def redacted(self):
         """The URL with the password hidden, for messages and logs."""
-        return re.sub(r"://([^:@/]*):[^@/]*@", r"://\1:***@", self.url)
+        return redact(self.url)
 
     def tls_context(self):
         context = ssl.create_default_context(cafile=self.query.get("ca"))
@@ -100,6 +107,10 @@ def targets_from(syslog_urls, mqtt_url):
 def syslog_message(event, severity, hostname, fmt="rfc3164", facility="local0", now=None):
     """One syslog line: header, then the event as compact JSON."""
     now = now or dt.datetime.now(dt.timezone.utc)
+    if facility not in FACILITIES:
+        raise ValueError(f"unknown syslog facility {facility!r}")
+    if fmt not in ("rfc3164", "rfc5424"):
+        raise ValueError(f"format must be rfc3164 or rfc5424, not {fmt!r}")
     pri = FACILITIES[facility] * 8 + SYSLOG_SEVERITY.get(severity, 6)
     body = json.dumps(event, separators=(",", ":"), sort_keys=True, default=str)
     host = slug(hostname).replace("_", "-")
@@ -312,7 +323,8 @@ def audit_syslog_messages(report, target, now=None):
                              "adb_network_open": report.get("adb_network_open")},
                             "info", name, fmt, facility, now)]
     for finding in report["findings"]:
-        lines.append(syslog_message({**common, "event": "audit_finding", **finding},
+        # "finding" repeats the id under a name no SIEM reserves (Wazuh keeps "id" as a static field).
+        lines.append(syslog_message({**common, "event": "audit_finding", **finding, "finding": finding["id"]},
                                     finding["severity"], name, fmt, facility, now))
     return lines
 
@@ -327,7 +339,7 @@ def export_audit(report, syslog_urls, mqtt_url):
             if not target.scheme.startswith("syslog"):
                 raise ValueError(f"{target.redacted()} is not a syslog URL")
             send_syslog(target, audit_syslog_messages(report, target))
-        except (OSError, ValueError, ssl.SSLError) as e:
+        except (OSError, ValueError, KeyError, ssl.SSLError) as e:
             problems.append(f"syslog {url_for_message(url)}: {e}")
     if mqtt_url:
         try:
@@ -356,7 +368,7 @@ def export_event(event, syslog_urls, mqtt_url, device_name=None, severity=None):
             line = syslog_message(payload, severity, name, target.query.get("format", "rfc3164"),
                                   target.query.get("facility", "local0"), now)
             send_syslog(target, [line])
-        except (OSError, ValueError, ssl.SSLError) as e:
+        except (OSError, ValueError, KeyError, ssl.SSLError) as e:
             problems.append(f"syslog {url_for_message(url)}: {e}")
     if mqtt_url:
         try:
@@ -381,10 +393,7 @@ def export_event(event, syslog_urls, mqtt_url, device_name=None, severity=None):
 
 
 def url_for_message(url):
-    try:
-        return Target(url).redacted()
-    except ValueError:
-        return re.sub(r"://([^:@/]*):[^@/]*@", r"://\1:***@", url)
+    return redact(url)
 
 
 def main(argv=None):

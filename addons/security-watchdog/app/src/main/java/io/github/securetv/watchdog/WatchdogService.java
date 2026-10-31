@@ -52,7 +52,8 @@ public class WatchdogService extends Service implements MqttLink.Listener {
     private static final long TICK_MS = 60_000L;
     private static final String KEY_UNAVAILABLE_FOR = "autoclose_unavailable_for";
     private static final String KEY_STUCK_FOR = "port_stuck_for";
-    private static final String LAUNCHER = "com.gathin.tvhome";
+    private static final String KEY_LAST_CLOSE = "last_close_ms";
+    private static final String KEY_REOPENED_FOR = "reopened_for";
 
     private HandlerThread thread;
     private Handler worker;
@@ -64,6 +65,8 @@ public class WatchdogService extends Service implements MqttLink.Listener {
     private SSLSocketFactory tls;
     private Snapshot current;
     private SecurityEvent lastEvent;
+    private String configText;
+    private Set<String> sameSigner = new HashSet<>();
     private long lastFullSweep;
     private int alertId = 100;
 
@@ -187,17 +190,27 @@ public class WatchdogService extends Service implements MqttLink.Listener {
     // Config and forwarders
 
     private void loadConfig() {
-        ConfigProvider.importExternal(this, store);
         String text = store.read(ConfigProvider.NAME);
         String problem = null;
-        config = Config.defaults(Build.MODEL);
+        Config next = Config.defaults(Build.MODEL);
         if (text != null) {
             try {
-                config = Config.parse(text, Build.MODEL);
+                next = Config.parse(text, Build.MODEL);
             } catch (IllegalArgumentException e) {
                 problem = e.getMessage();
             }
         }
+        if (config != null && !java.util.Objects.equals(text, configText)) {
+            // Tell the old targets before switching to new ones: whoever pushed this config (ADB only)
+            // could be pointing the reports somewhere else, and the owner should hear about it.
+            handle(Collections.singletonList(new SecurityEvent("config_changed", SecurityEvent.MEDIUM,
+                    "The watchdog's config was changed", next.syslog.size() + " syslog target(s), MQTT "
+                    + (next.mqtt == null ? "off" : "on") + ", auto-close " + next.adbAutocloseMinutes + " min",
+                    null, System.currentTimeMillis())));
+            if (mqtt != null) mqtt.drain(3_000L);
+        }
+        config = next;
+        configText = text;
         ha = new HomeAssistant(config);
         try {
             tls = Tls.factory(config.caPem);
@@ -227,11 +240,30 @@ public class WatchdogService extends Service implements MqttLink.Listener {
         }
     }
 
+    /**
+     * The owner's apps: this one, the ones config.json names, and the ones signed with the same key as
+     * this one (the launcher and add-ons built on the same computer). A package name alone is no proof:
+     * any app may take a name that is not installed yet.
+     */
     private Set<String> trusted() {
         Set<String> t = new HashSet<>(config.trusted);
         t.add(getPackageName());
-        t.add(LAUNCHER);
+        t.addAll(sameSigner);
         return t;
+    }
+
+    private Set<String> sameSigner(Snapshot s) {
+        Set<String> out = new HashSet<>();
+        android.content.pm.PackageManager pm = getPackageManager();
+        for (String pkg : s.apps.keySet()) {
+            try {
+                if (pm.checkSignatures(getPackageName(), pkg) == android.content.pm.PackageManager.SIGNATURE_MATCH) {
+                    out.add(pkg);
+                }
+            } catch (RuntimeException ignored) {
+            }
+        }
+        return out;
     }
 
     @Override
@@ -270,15 +302,20 @@ public class WatchdogService extends Service implements MqttLink.Listener {
     private void sweep(boolean full) {
         if (config == null) return;
         long now = System.currentTimeMillis();
-        Snapshot fresh;
-        if (full || current == null) {
-            fresh = Probe.read(this);
-            lastFullSweep = now;
-        } else {
+        Snapshot fresh = null;
+        if (!full && current != null) {
             // Settings and the port only; the app list changes through the package broadcasts.
             java.util.Map<String, String> settings = new java.util.HashMap<>();
             for (String key : Snapshot.KEYS) settings.put(key, Probe.setting(getContentResolver(), key));
             fresh = new Snapshot(settings, current.apps, current.admins, Probe.adbListening());
+            // A new holder of accessibility, notification access or the keyboard may be an app installed a
+            // moment ago, before its install broadcast arrived: judge it against the real app list.
+            if (holdersChanged(current, fresh)) fresh = null;
+        }
+        if (fresh == null) {
+            fresh = Probe.read(this);
+            sameSigner = sameSigner(fresh);
+            lastFullSweep = now;
         }
         Snapshot before = current != null ? current : store.snapshot();
         List<SecurityEvent> events = before == null ? fresh.baseline(trusted(), now)
@@ -291,10 +328,26 @@ public class WatchdogService extends Service implements MqttLink.Listener {
         broadcastStatus();
     }
 
+    private static boolean holdersChanged(Snapshot a, Snapshot b) {
+        return !a.components(Snapshot.A11Y).equals(b.components(Snapshot.A11Y))
+                || !a.components(Snapshot.LISTENERS).equals(b.components(Snapshot.LISTENERS))
+                || !a.get(Snapshot.IME).equals(b.get(Snapshot.IME));
+    }
+
     private void checkAutoClose(long now) {
         long since = AutoClose.onSince(current, store.number(AutoClose.KEY_ON_SINCE, 0L), now);
         store.setNumber(AutoClose.KEY_ON_SINCE, since);
         if (since == 0L) store.setNumber(KEY_UNAVAILABLE_FOR, 0L);
+        long lastClose = store.number(KEY_LAST_CLOSE, 0L);
+        if ((current.adbUsbOn() || current.adbWifiOn()) && lastClose > 0 && now - lastClose < 5 * 60_000L
+                && now - lastClose > 2_000L && store.number(KEY_REOPENED_FOR, -1L) != lastClose) {
+            store.setNumber(KEY_REOPENED_FOR, lastClose);
+            handle(Collections.singletonList(new SecurityEvent("adb_reopened", SecurityEvent.HIGH,
+                    "Debugging came back on right after the watchdog closed it",
+                    "Something on the TV switches it back on: the firmware, or an app holding "
+                    + "WRITE_SECURE_SETTINGS. The watchdog tries again after the full timeout, not sooner.",
+                    null, now)));
+        }
         if (AutoClose.remainingMs(current, since, now, config.adbAutocloseMinutes) != 0L) return;
         if (!current.adbUsbOn() && !current.adbWifiOn()) {
             // Both switches are off and the port still answers: nothing an app can switch. Say so once.
@@ -331,6 +384,10 @@ public class WatchdogService extends Service implements MqttLink.Listener {
                     "Debugging could not be switched off", e.getMessage(), null, now)));
             return;
         }
+        // Restart the clock, so a firmware that turns debugging straight back on gets one attempt per
+        // timeout rather than one a minute.
+        store.setNumber(AutoClose.KEY_ON_SINCE, now);
+        store.setNumber(KEY_LAST_CLOSE, now);
         handle(Collections.singletonList(new SecurityEvent("adb_closed", SecurityEvent.INFO,
                 "Debugging switched off by the watchdog", reason, null, now)));
         worker.postDelayed(() -> sweep(false), 3_000L);

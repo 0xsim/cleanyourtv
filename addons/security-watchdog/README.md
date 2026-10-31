@@ -33,8 +33,11 @@ It is the on-TV half of the security tools in this fork. The other half runs on 
 | An app installed from a store, developer options on | low | Worth a look, rarely a problem |
 | Things switched back off, apps removed | info | Kept in the log |
 
-Your own apps never count against you: the watchdog itself, the Clean Your TV launcher, and anything
-you list in `trusted_packages` are always reported as info.
+Your own apps never count against you: the watchdog itself, apps signed with the same key as the
+watchdog (the launcher and add-ons you built on the same computer), and anything you list in
+`trusted_packages` are reported as info. A package name alone is never trusted, since any app may take
+a name that is not installed yet. If you built the launcher on another computer, add its name
+(`com.gathin.tvhome`) to `trusted_packages`.
 
 It checks settings the moment they change (Android tells it), apps as they are installed or removed,
 and everything else once a minute, with a full re-check every `sweep_minutes`. The first look after
@@ -49,6 +52,9 @@ the network port too.
 
 - The clock starts when debugging comes on, including the session you install the watchdog with.
 - On the TV, **Keep it on longer** restarts the clock, and **Close debugging now** closes it at once.
+- If something switches debugging straight back on (the firmware, or an app holding
+  `WRITE_SECURE_SETTINGS`), the watchdog reports it once as high and tries again only after the next
+  full timeout.
 - From Home Assistant, the **Close ADB** button does the same.
 - `adb_autoclose_minutes: 0` turns auto-close off; the watchdog then only reports.
 
@@ -65,7 +71,9 @@ TV_HOST=<tv ip> addons/security-watchdog/install.sh ~/tv-watchdog.json   # and r
 
 It builds the app, installs it, grants `WRITE_SECURE_SETTINGS` (skip that with `NO_AUTOCLOSE=1`) and
 `POST_NOTIFICATIONS`, pushes the config and checks that the TV accepted it. A config with a mistake is
-refused and the previous one stays in use, so a typo never switches reporting off.
+refused and the previous one stays in use, so a typo never switches reporting off. When a config
+replaces another, the watchdog first sends a `config_changed` event to the old targets, so a change
+you did not make is reported where you already look.
 
 The config can hold an MQTT password. Keep the file outside the repository, and push it over USB or
 Wireless debugging where the TV offers them: network ADB on port 5555 is plaintext.
@@ -78,7 +86,7 @@ All keys are optional. [`config.example.json`](config.example.json):
 |---|---|---|
 | `device_name` | the TV's model | Its name in syslog and Home Assistant. Use the same `--device-name` with the host tools so everything lands on one device |
 | `syslog` | none | One URL or a list: `syslog+udp://host:514`, `syslog+tcp://host:514`, `syslog+tls://host:6514`; add `?format=rfc5424` for RFC 5424 |
-| `mqtt` | none | `mqtt://user:pass@host:1883` or `mqtts://user:pass@host:8883` |
+| `mqtt` | none | `mqtt://user:pass@host:1883` or `mqtts://user:pass@host:8883`; percent-encode `/ ? # @ :` in the password (`%2F` and so on) |
 | `mqtt_base` | `cleanyourtv` | Topic prefix |
 | `ha_discovery` | `homeassistant` | Home Assistant's discovery prefix, or `off` |
 | `ca_pem` | system CAs | Your own CA certificate (PEM), for `mqtts` and `syslog+tls` with a home CA |
@@ -135,7 +143,10 @@ TV_HOST=<tv ip> tools/venv/bin/python -I tools/tv.py 'content query --uri conten
 
 It reads settings, the app list, device admins and two system properties, and changes nothing but
 the two debugging switches. Its log, outboxes and config stay in its private storage; backups are off.
-The config provider answers only callers holding `WRITE_SECURE_SETTINGS`, which on a TV means ADB.
+The config provider answers only the shell (ADB) or root: the manifest requires `WRITE_SECURE_SETTINGS`,
+and each call also checks the caller's user ID, since other apps can hold that permission too. Commands
+arriving on MQTT with the retain flag are ignored, so a retained message cannot close debugging at every
+boot.
 No accounts, no telemetry, no ads, no libraries.
 
 ## Uninstall

@@ -25,8 +25,9 @@ Cleaning a TV means turning on ADB, and ADB is the weak point:
   (`ro.adb.secure` unset or 0), anyone on your network gets a shell. The audit tells you whether your TV
   is one of those; auto-close makes sure the window is short either way.
 - **Debugging is easy to forget.** A session that ends with a laptop going to sleep leaves the port
-  open for days. `adb_autoclose.py run -- ...` closes it whatever way the session ends, and the
-  watchdog closes it from the TV itself after a timeout, even if the computer is gone.
+  open for days. `adb_autoclose.py run -- ...` closes it when the command ends, fails, or is stopped
+  (Ctrl-C, the terminal closing); a laptop that sleeps or loses power cannot run anything, which is
+  what the watchdog is for: it closes debugging from the TV itself after a timeout.
 - **What spyware needs is visible.** Accessibility, notification access, device admin, a third-party
   keyboard, a proxy: an app that wants to watch you asks for one of these. The audit lists who holds
   them now; the watchdog tells you the moment it changes.
@@ -68,9 +69,11 @@ These hold for everything this fork adds, and the tests check the ones that can 
 - **Passwords stay out of sight.** URLs are printed with the password masked; the audit report is
   written with mode 0600; the watchdog keeps its config in private storage with backups off.
 - **Commands from outside can only make the TV safer.** The watchdog's MQTT command topic accepts
-  "close ADB" and "re-check" and nothing else; its config provider answers only ADB.
-- **Your own apps are not findings.** The launcher, the add-ons this repository builds, and anything
-  you pass with `--trust` / `trusted_packages` are reported as info.
+  "close ADB" and "re-check" and nothing else, and ignores retained messages; its config provider checks
+  that the caller is the shell (ADB) or root, and a config change is first reported to the old targets.
+- **A name is not proof.** Apps you name with `--trust` / `trusted_packages`, and (on the TV) apps
+  signed with the same key as the watchdog, are reported as info. An app that only carries the name of
+  something this repository builds stays visible, at low, with a note to trust it once you have checked.
 
 ## Limits
 

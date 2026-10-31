@@ -37,6 +37,7 @@ import datetime as dt
 import json
 import os
 import re
+import secrets
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -124,21 +125,22 @@ class Finding:
 # ---------------------------------------------------------------------------------------------------
 # Collecting
 
-def batch_command(commands):
-    """One shell line that runs every command and marks where each answer starts."""
+def batch_command(commands, nonce):
+    """One shell line that runs every command and marks where each answer starts. The nonce is new
+    each run, so nothing the TV prints can pass for a marker and overwrite another answer."""
     parts = []
     for key, command in commands.items():
-        parts.append(f"echo '@@{key}@@'; ({command}) 2>/dev/null")
+        parts.append(f"echo '@@{nonce}:{key}@@'; ({command}) 2>/dev/null")
     return "; ".join(parts)
 
 
-def split_batch(output, keys):
+def split_batch(output, keys, nonce):
     """The batch's output, cut back into one answer per key. A key with no marker reads as ''."""
     answers = {key: "" for key in keys}
     current = None
     lines = []
     for raw in output.replace("\r", "").split("\n"):
-        marker = re.fullmatch(r"@@([a-z_]+)@@", raw.strip())
+        marker = re.fullmatch(rf"@@{re.escape(nonce)}:([a-z_]+)@@", raw.strip())
         if marker and marker.group(1) in answers:
             if current is not None:
                 answers[current] = "\n".join(lines).strip()
@@ -150,9 +152,10 @@ def split_batch(output, keys):
     return answers
 
 
-def collect(shell):
+def collect(shell, nonce=None):
     """Every answer the audit needs, from one round trip. `shell` runs one command on the TV."""
-    return split_batch(shell(batch_command(COMMANDS)), COMMANDS)
+    nonce = nonce or secrets.token_hex(8)
+    return split_batch(shell(batch_command(COMMANDS, nonce)), COMMANDS, nonce)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -269,7 +272,8 @@ def patch_age_months(patch, today):
 
 
 def project_packages(root=ROOT):
-    """The launcher and add-on packages this repository builds: the owner's own, so trusted."""
+    """The launcher and add-on package names this repository builds. A name is not proof of who built
+    the app, so evaluate() only softens what these hold to low; --trust is what makes them info."""
     names = set()
     pattern = re.compile(r"applicationId\b[^\n]*?['\"]([A-Za-z_][\w.]*\.[\w.]+)['\"]")
     for gradle in list(root.glob("launcher/app/build.gradle*")) + list(root.glob("addons/*/app/build.gradle*")):
@@ -283,10 +287,16 @@ def project_packages(root=ROOT):
 # ---------------------------------------------------------------------------------------------------
 # Judging
 
-def evaluate(facts, today=None, trusted=()):
-    """The findings, worst first. `trusted` packages are the owner's own and only ever info."""
+def evaluate(facts, today=None, trusted=(), known=()):
+    """The findings, worst first.
+
+    `trusted` packages are the owner's own (--trust) and only ever info. `known` packages carry the name
+    of an app this repository builds: a name proves nothing (spyware can take any name that is not
+    installed), so their powers stay visible, at low, with a note to --trust them once checked.
+    """
     today = today or dt.date.today()
     trusted = set(trusted)
+    known = set(known) - trusted
     apps = third_party(facts)
     findings = []
 
@@ -296,7 +306,15 @@ def evaluate(facts, today=None, trusted=()):
     def holder_severity(package, third_party_severity):
         if package in trusted:
             return "info"
-        return third_party_severity if package in apps else "info"
+        if package not in apps:
+            return "info"
+        if package in known:
+            return "low" if RANK[third_party_severity] < RANK["low"] else third_party_severity
+        return third_party_severity
+
+    def known_note(package):
+        return (" It has the name of an app from this repository; if you installed it, pass --trust "
+                f"{package}.") if package in known else ""
 
     # ADB ---------------------------------------------------------------------------------------
     secure = value(facts, "adb_secure")
@@ -376,29 +394,30 @@ def evaluate(facts, today=None, trusted=()):
             "package_verifier_enable is 0: installed APKs are not checked for known malware.",
             "Play Store > Play Protect > Scan apps > on.")
     sideloaded = sorted(p for p, installer in apps.items() if installer in SIDELOAD_INSTALLERS)
-    own = [p for p in sideloaded if p in trusted]
-    others = [p for p in sideloaded if p not in trusted]
+    own = [p for p in sideloaded if p in trusted or p in known]
+    others = [p for p in sideloaded if p not in trusted and p not in known]
     if others:
         add("APP-004", "low", f"{len(others)} app(s) installed from outside an app store",
             "Sideloaded apps skip the store's checks. Make sure you know each one: " + ", ".join(others),
             "Remove the ones you do not recognise in Settings > Apps.", others)
     if own:
-        add("APP-005", "info", f"{len(own)} of your own app(s) installed by ADB", ", ".join(own),
-            packages=own)
+        add("APP-005", "info", f"{len(own)} app(s) from this repository or --trust, installed by ADB",
+            ", ".join(own) + ". Names only: check they are the ones you built.", packages=own)
 
     # Powers that spyware wants -----------------------------------------------------------------
     for package, component in components(facts.get("accessibility_services")):
         add("PRM-001", holder_severity(package, "high"), f"{package} has accessibility access",
-            f"{component} can read what is on screen and every key pressed, and act for you.",
+            f"{component} can read what is on screen and every key pressed, and act for you."
+            + known_note(package),
             "Settings > Accessibility > turn it off unless you set it up yourself.", [package])
     for package, component in components(facts.get("notification_listeners")):
         add("PRM-002", holder_severity(package, "high"), f"{package} reads your notifications",
-            f"{component} sees the text of every notification on the TV.",
+            f"{component} sees the text of every notification on the TV." + known_note(package),
             "Settings > Apps > Special app access > Notification access > off.", [package])
     admins, owners = device_admins(facts.get("device_policy"))
     for package in admins:
         add("PRM-003", holder_severity(package, "high"), f"{package} is a device administrator",
-            "A device admin can lock the TV, wipe it, or refuse to be uninstalled.",
+            "A device admin can lock the TV, wipe it, or refuse to be uninstalled." + known_note(package),
             "Settings > Security > Device admin apps > deactivate it.", [package])
     for package in owners:
         add("PRM-004", holder_severity(package, "medium"), f"{package} manages this TV (device owner)",
@@ -408,7 +427,7 @@ def evaluate(facts, today=None, trusted=()):
     if ime_pairs:
         package, component = ime_pairs[0]
         add("PRM-005", holder_severity(package, "medium"), f"The keyboard is {package}",
-            f"{component} sees everything typed on the TV, passwords included.",
+            f"{component} sees everything typed on the TV, passwords included." + known_note(package),
             "Use the TV's own keyboard unless you trust this one.", [package])
     default_package = ime_pairs[0][0] if ime_pairs else None
     for package, component in components(facts.get("enabled_imes")):
@@ -522,8 +541,13 @@ def connect():
     try:
         import tv
     except ImportError as e:
-        raise SystemExit(f"cannot load tools/tv.py ({e}).\nrun: python3 -m venv tools/venv && "
-                         "tools/venv/bin/pip install -r tools/requirements.txt")
+        print(f"cannot load tools/tv.py ({e}).\nrun: python3 -m venv tools/venv && "
+              "tools/venv/bin/pip install -r tools/requirements.txt", file=sys.stderr)
+        raise SystemExit(2)
+    except SystemExit as e:          # tv.py exits with a message when TV_HOST is missing or bad
+        if e.code not in (None, 0):
+            print(e.code, file=sys.stderr)
+        raise SystemExit(2)
     try:
         return tv.connect()
     except Exception as e:
@@ -534,7 +558,9 @@ def connect():
 
 def write_private(path, text):
     """Write a report readable by this account only: it lists what is installed on the TV."""
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    if hasattr(os, "fchmod"):
+        os.fchmod(fd, 0o600)         # O_CREAT's mode only applies to a new file
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(text)
 
@@ -571,13 +597,16 @@ def main(argv=None):
     if not value(facts, "sdk"):
         print("the TV answered nothing the audit could read; check the connection", file=sys.stderr)
         return 2
-    trusted = project_packages() | set(args.trust)
-    findings = evaluate(facts, trusted=trusted)
+    findings = evaluate(facts, trusted=set(args.trust), known=project_packages())
     report = build_report(facts, findings, device_name=args.device_name)
     as_json = json.dumps(report, indent=2)
     print(as_json if args.json else text_report(report), end="" if not args.json else "\n")
     if args.out:
-        write_private(args.out, as_json + "\n")
+        try:
+            write_private(args.out, as_json + "\n")
+        except OSError as e:
+            print(f"cannot write {args.out}: {e.strerror or e}", file=sys.stderr)
+            return 2
     sys.path.insert(0, str(HERE))
     import integrations
     syslog_urls, mqtt_url = integrations.targets_from(args.syslog, args.mqtt)

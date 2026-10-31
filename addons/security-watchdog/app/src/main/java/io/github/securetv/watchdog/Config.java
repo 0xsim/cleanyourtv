@@ -71,7 +71,8 @@ public final class Config {
         try {
             o = new JSONObject(json);
         } catch (JSONException e) {
-            throw new IllegalArgumentException("config.json is not valid JSON: " + e.getMessage());
+            // Not e.getMessage(): Android's org.json quotes the whole input there, passwords included.
+            throw new IllegalArgumentException("config.json is not valid JSON");
         }
         Config d = defaults(model);
         String name = o.optString("device_name", d.deviceName).trim();
@@ -131,7 +132,10 @@ public final class Config {
                 ? scheme.equals("syslog+udp") || scheme.equals("syslog+tcp") || scheme.equals("syslog+tls")
                 : scheme.equals("mqtt") || scheme.equals("mqtts");
         if (!ok) throw new IllegalArgumentException(kind + ": unsupported scheme in " + redact(url));
-        if (uri.getHost() == null) throw new IllegalArgumentException(kind + ": no host in " + redact(url));
+        if (uri.getHost() == null) {
+            throw new IllegalArgumentException(kind + ": no host in " + redact(url)
+                    + " (percent-encode / ? # @ in a password)");
+        }
         return uri;
     }
 
@@ -147,7 +151,8 @@ public final class Config {
 
     /** A URL with its password hidden, for the log and the screen. */
     public static String redact(String url) {
-        return url == null ? "" : url.replaceAll("://([^:@/]*):[^@/]*@", "://$1:***@");
+        // Everything from the user name's colon to the last '@', so a password holding / ? # @ stays hidden.
+        return url == null ? "" : url.replaceAll("://([^:/@]*):.*@(?=[^@]*$)", "://$1:***@");
     }
 
     /** The topic- and host-safe form of the device name, the same as tools/integrations.py's slug(). */

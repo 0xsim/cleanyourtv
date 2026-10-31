@@ -81,6 +81,26 @@ public class CoreTest {
     }
 
     @Test
+    public void passwordsWithUrlCharactersStayHidden() {
+        for (String url : new String[]{"mqtt://tv:pa/ss@broker:1883", "mqtt://tv:a@b#c?d@broker"}) {
+            String shown = Config.redact(url);
+            assertTrue(shown, shown.startsWith("mqtt://tv:***@"));
+            assertFalse(shown, shown.contains("pa/ss") || shown.contains("a@b#c"));
+        }
+        try {
+            Config.parse("{\"mqtt\":\"mqtt://tv:pa/ss@broker:1883\"}", "m");
+        } catch (IllegalArgumentException e) {
+            assertFalse(e.getMessage(), e.getMessage().contains("pa/ss"));
+        }
+        try {
+            Config.parse("{\"mqtt\":\"mqtt://tv:secret@h\", oops}", "m");
+            fail();
+        } catch (IllegalArgumentException e) {
+            assertFalse(e.getMessage(), e.getMessage().contains("secret"));
+        }
+    }
+
+    @Test
     public void slugMatchesThePythonTools() {
         assertEquals("living_room_tv", Config.slug("Living Room TV!"));
         assertEquals("tv", Config.slug("!!!"));
@@ -132,6 +152,14 @@ public class CoreTest {
         assertEquals(0x33, p[0] & 0xFF);                               // PUBLISH, QoS 1, retain
         MqttLink.Packet parsed = MqttLink.readPacket(new ByteArrayInputStream(p));
         assertArrayEquals(new String[]{"a/b", "hello"}, MqttLink.parsePublish(parsed));
+    }
+
+    @Test
+    public void retainedCommandsAreRecognised() throws Exception {
+        byte[] live = MqttLink.publishPacket("x/command", "close_adb".getBytes(StandardCharsets.UTF_8), 1, false);
+        byte[] kept = MqttLink.publishPacket("x/command", "close_adb".getBytes(StandardCharsets.UTF_8), 1, true);
+        assertFalse(MqttLink.isRetained(MqttLink.readPacket(new ByteArrayInputStream(live))));
+        assertTrue(MqttLink.isRetained(MqttLink.readPacket(new ByteArrayInputStream(kept))));
     }
 
     @Test

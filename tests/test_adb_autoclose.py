@@ -94,7 +94,8 @@ class CloseTest(unittest.TestCase):
 
     def test_keep_usb_reboots_instead(self):
         dev = FakeDev()
-        quiet(ac.close_and_verify, self.args("now", "--keep-usb"), "h", 5555, lambda: dev, checker(0))
+        quiet(ac.close_and_verify, self.args("now", "--keep-usb"), "h", 5555, lambda: dev, checker(0),
+              lambda s: None)
         self.assertEqual(dev.sent[-1], ac.CLOSE_KEEP_USB)
         self.assertNotIn("adb_enabled 0", dev.sent[-1])
 
@@ -157,6 +158,45 @@ class MainTest(unittest.TestCase):
         def interrupted(seconds):
             raise KeyboardInterrupt
         self.assertEqual(self.run_main(["after", "1m"], sleep=interrupted), 130)
+
+    def test_a_relay_checks_the_tvs_own_port(self):
+        seen = []
+
+        def check(host, port):
+            seen.append((host, port))
+            return 0, "closed"
+        with mock.patch.object(ac, "tv_endpoint", return_value=("127.0.0.1", 15555)):
+            quiet(ac.main, ["now", "--check-host", "192.168.1.50"], connect_fn=FakeDev, check=check,
+                  sleep=lambda s: None)
+            quiet(ac.main, ["now", "--check-host", "192.168.1.50", "--check-port", "5577"], connect_fn=FakeDev,
+                  check=check, sleep=lambda s: None)
+        self.assertEqual(seen, [("192.168.1.50", 5555), ("192.168.1.50", 5577)])
+
+    def test_keep_usb_waits_for_the_restart_before_checking(self):
+        events = []
+
+        def check(host, port):
+            events.append("check")
+            return 0, "closed"
+        quiet(ac.close_and_verify, ac.parse_args(["now", "--keep-usb"]), "h", 5555, FakeDev, check,
+              lambda s: events.append(f"sleep {s:g}"))
+        self.assertEqual(events[:2], [f"sleep {ac.REBOOT_WAIT_S:g}", "check"])
+
+    def test_sigterm_during_run_still_closes(self):
+        dev = FakeDev()
+        with mock.patch.object(ac, "tv_endpoint", return_value=("192.168.1.50", 5555)), \
+                mock.patch.object(ac.subprocess, "call", side_effect=ac._Stop(15)):
+            code = quiet(ac.main, ["run", "--", "x"], connect_fn=lambda: dev, check=checker(0),
+                         sleep=lambda s: None)
+        self.assertEqual(code, 130)
+        self.assertEqual(dev.sent[-1], ac.CLOSE_ALL)
+
+    def test_missing_tv_host_is_exit_2(self):
+        with mock.patch.dict(ac.os.environ, {}, clear=True), mock.patch.dict(ac.sys.modules):
+            ac.sys.modules.pop("tv", None)              # import it fresh, with no TV_HOST
+            with self.assertRaises(SystemExit) as cm:
+                quiet(ac.tv_endpoint)
+        self.assertEqual(cm.exception.code, 2)
 
     def test_a_relay_needs_the_real_address(self):
         args = ac.parse_args(["now"])
