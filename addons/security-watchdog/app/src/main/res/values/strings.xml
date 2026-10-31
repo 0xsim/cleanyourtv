@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Security Watchdog</string>
+    <string name="channel_name">Watching</string>
+    <string name="alerts_channel_name">Security alerts</string>
+    <string name="notification_text">Watching debugging, apps and security settings</string>
+    <string name="reason_button">From the Close button on the TV</string>
+    <string name="reason_mqtt">From Home Assistant (MQTT command)</string>
+    <string name="reason_timer">It had been on for %1$d minutes</string>
+    <string name="extended_title">Debugging kept on for another %1$d minutes</string>
+    <string name="alert_toast">Security Watchdog: %1$s</string>
+    <string name="button_close">Close debugging now</string>
+    <string name="button_extend">Keep it on longer</string>
+    <string name="button_recheck">Re-check now</string>
+    <string name="recent_events">Recent events</string>
+    <string name="status_starting">Taking the first look…</string>
+    <string name="label_debugging">Debugging</string>
+    <string name="label_autoclose">Auto-close</string>
+    <string name="label_network">Network</string>
+    <string name="label_apps">Apps</string>
+    <string name="label_reporting">Reporting</string>
+    <string name="adb_off">Off</string>
+    <string name="adb_usb_on">USB debugging on</string>
+    <string name="adb_wireless_on">Wireless debugging on</string>
+    <string name="adb_network_on">Port %1$d open</string>
+    <string name="autoclose_disabled">Off (adb_autoclose_minutes is 0)</string>
+    <string name="autoclose_no_permission">Not allowed: run install.sh to grant it</string>
+    <string name="autoclose_idle">%1$d minutes after debugging comes on</string>
+    <string name="autoclose_in">Switching debugging off in %1$d min</string>
+    <string name="no_proxy">No proxy</string>
+    <string name="proxy">Proxy %1$s</string>
+    <string name="private_dns">Private DNS: %1$s</string>
+    <string name="apps_count">%1$d installed, %2$d with accessibility access</string>
+    <string name="reporting">Syslog: %1$d target(s) · MQTT: %2$s</string>
+    <string name="off">off</string>
+    <string name="connected">connected</string>
+    <string name="not_connected">not connected</string>
+    <string name="no_events">Nothing yet.</string>
+</resources>

@@ -1,0 +1,40 @@
+plugins {
+    id 'com.android.application'
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    // Android's own org.json, which the JVM tests cannot reach through android.jar.
+    testImplementation 'org.json:json:20240303'
+}
+
+android {
+    namespace 'io.github.securetv.watchdog'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'io.github.securetv.watchdog'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+}
