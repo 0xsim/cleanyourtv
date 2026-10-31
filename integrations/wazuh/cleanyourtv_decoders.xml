@@ -1,0 +1,14 @@
+<!--
+  Clean Your TV (secure edition): events from tools/security_audit.py, tools/adb_autoclose.py and the
+  security-watchdog add-on. Each arrives as a syslog line tagged "cleanyourtv" whose message is one JSON
+  object, so the parent matches the program name and the child hands the message to the JSON decoder.
+  Install: /var/ossec/etc/decoders/cleanyourtv_decoders.xml, then restart the manager.
+-->
+<decoder name="cleanyourtv">
+  <program_name>cleanyourtv</program_name>
+</decoder>
+
+<decoder name="cleanyourtv_json">
+  <parent>cleanyourtv</parent>
+  <plugin_decoder>JSON_Decoder</plugin_decoder>
+</decoder>

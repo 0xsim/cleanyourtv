@@ -27,6 +27,8 @@
   <a href="docs/PRESS.md"><img src="docs/card-halloween.jpg" alt="371 TV models · 100 brands · 31 languages · 572 KB launcher. Featured in TechCrunch, TechRadar, Tom's Guide, Mashable, Android Authority, XDA, FlatpanelsHD, It's FOSS, Phandroid, GIGAZINE, Xataka, WinFuture, Frandroid, Macitynet, Techaeris, TechPP and 298 more: 314 articles from 44 countries. Before: stock Google TV home with a sponsored ad. After: the Clean Your TV launcher." width="800"></a>
 </p>
 
+> **Secure edition.** This fork adds a TV security audit, debugging auto-close (from your computer and on the TV itself), a security watchdog add-on, and reporting to a SIEM over syslog and to Home Assistant over MQTT. The launcher stays offline. Start with [SECURE-EDITION.md](SECURE-EDITION.md).
+
 ## Start here
 
 | You have | Go to |
@@ -198,6 +200,9 @@ tools/theme.sh themes/aurora                                 # push a theme; --r
 | [`tools/check.py`](tools/check.py) | Compares the TV with the list that was applied, for what a firmware update undid; `--fix` puts it back. |
 | [`tools/adb-closed.py`](tools/adb-closed.py) | Checks that the TV's network ADB port is closed once debugging is off: exits 0 when the TV refuses the connection, 1 while it is still open, 2 when nothing answered or the check itself could not run. No `nc` needed. |
 | [`tools/privacy.py`](tools/privacy.py) | Audits the TV for voice, ACR and telemetry candidates and prints the evidence for each; `--write` turns the findings into a list `disable.sh` and `restore.sh` already understand. |
+| [`tools/security_audit.py`](tools/security_audit.py) | A read-only security check of the TV: ADB exposure (no prompt, open or persistent port), debug builds, SELinux, verified boot, patch age, apps holding accessibility, notification, device-admin, keyboard, overlay, usage or install rights, sideloaded apps, proxies and open ports. Text or JSON, with `--syslog` and `--mqtt` export. Secure edition: [SECURE-EDITION.md](SECURE-EDITION.md). |
+| [`tools/adb_autoclose.py`](tools/adb_autoclose.py) | Switches debugging off `now`, `after 30m`, or when a command it `run`s ends, and only reports closed once the TV refuses port 5555; `--keep-usb` reboots instead. Reports the result to syslog or MQTT. |
+| [`tools/integrations.py`](tools/integrations.py) | The syslog (UDP, TCP, TLS) and MQTT (with Home Assistant discovery) senders the two tools above use, standard library only; also sends a saved report or a test event. See [integrations/](integrations/). |
 | [`tools/theme.sh`](tools/theme.sh), [`theme_restart.py`](tools/theme_restart.py) | Push a folder from [`themes/`](themes/) to the launcher and restart Home. |
 | [`tools/manage.py`](tools/manage.py) | List every add-on, theme and switch with its screenshot, see what is on the TV, and install, update or remove one by running its creator's own script. |
 | [`tools/bench.py`](tools/bench.py) | Measures the launcher that answers HOME: key latency, how far the focus moved, janky frames, cold start, return to Home, and the idle CPU and PSS it costs. Changes nothing on the TV and writes the raw per-key numbers to JSON; no extra install. |

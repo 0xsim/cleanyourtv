@@ -1,0 +1,85 @@
+<!--
+  Clean Your TV (secure edition) rules. IDs 100700-100739; move the block if your own rules use them.
+  Install: /var/ossec/etc/rules/cleanyourtv_rules.xml, then restart the manager.
+
+  The base rule takes every event; one rule per severity sets the level; the specific rules below sit
+  under the high rule, so they only fire for events the tools already judged high and raise them further.
+-->
+<group name="cleanyourtv,smart_tv,">
+
+  <rule id="100700" level="0">
+    <decoded_as>cleanyourtv</decoded_as>
+    <description>Clean Your TV event</description>
+  </rule>
+
+  <!-- By the severity the tool gave the event -->
+  <rule id="100701" level="3">
+    <if_sid>100700</if_sid>
+    <field name="severity">^info$</field>
+    <description>TV $(device): $(title)</description>
+  </rule>
+
+  <rule id="100702" level="5">
+    <if_sid>100700</if_sid>
+    <field name="severity">^low$</field>
+    <description>TV $(device): $(title)</description>
+  </rule>
+
+  <rule id="100703" level="8">
+    <if_sid>100700</if_sid>
+    <field name="severity">^medium$</field>
+    <description>TV $(device): $(title)</description>
+  </rule>
+
+  <rule id="100704" level="10">
+    <if_sid>100700</if_sid>
+    <field name="severity">^high$</field>
+    <description>TV $(device): $(title)</description>
+  </rule>
+
+  <!-- The ones worth waking someone for -->
+  <rule id="100710" level="12">
+    <if_sid>100704</if_sid>
+    <field name="event">^adb_network$|^adb_persistent$|^adb_port_stuck$</field>
+    <description>TV $(device): network ADB is open (plaintext shell on port 5555)</description>
+    <group>remote_access,</group>
+  </rule>
+
+  <rule id="100711" level="12">
+    <if_sid>100704</if_sid>
+    <field name="event">^accessibility$|^notification_access$|^device_admin$</field>
+    <description>TV $(device): $(package) was given spyware-grade access</description>
+    <group>spyware,</group>
+  </rule>
+
+  <rule id="100712" level="12">
+    <if_sid>100704</if_sid>
+    <field name="event">^proxy$</field>
+    <description>TV $(device): web traffic redirected through a proxy</description>
+    <group>traffic_interception,</group>
+  </rule>
+
+  <rule id="100713" level="12">
+    <if_sid>100704</if_sid>
+    <field name="event">^adb_close$</field>
+    <field name="result">^still_open$</field>
+    <description>TV $(device): debugging was switched off but the ADB port still answers</description>
+    <group>remote_access,</group>
+  </rule>
+
+  <!-- Audit summaries: one per run, so a missing run can be noticed -->
+  <rule id="100720" level="3">
+    <if_sid>100700</if_sid>
+    <field name="event">^audit_summary$</field>
+    <description>TV $(device): security audit ran ($(high) high, $(medium) medium)</description>
+  </rule>
+
+  <!-- Several sideloaded installs in a short time -->
+  <rule id="100730" level="10" frequency="3" timeframe="600">
+    <if_matched_sid>100703</if_matched_sid>
+    <field name="event">^app_installed$</field>
+    <same_field>device</same_field>
+    <description>TV $(device): several apps installed from outside a store within 10 minutes</description>
+  </rule>
+
+</group>

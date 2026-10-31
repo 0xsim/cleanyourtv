@@ -1,0 +1,12 @@
+<!--
+  Add inside <ossec_config> of /var/ossec/etc/ossec.conf on the manager, so it listens for syslog.
+  Narrow allowed-ips to your TVs and the computer that runs the audit. Use TCP (or a TLS relay such as
+  rsyslog in front of Wazuh) if you want delivery guarantees; UDP is what most TVs' networks expect.
+-->
+<remote>
+  <connection>syslog</connection>
+  <port>514</port>
+  <protocol>udp</protocol>
+  <allowed-ips>192.168.1.0/24</allowed-ips>
+  <local_ip>0.0.0.0</local_ip>
+</remote>

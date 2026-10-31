@@ -50,6 +50,9 @@ Connect
 Back up first
 - Save the full package list, disabled-package list, getprop output and all settings to a backup folder
   before changing anything, and write a restore script that re-enables everything you disable.
+- Run the security audit and keep its report with the backup: `tools/venv/bin/python -I
+  tools/security_audit.py --out backup/security-audit-before.json`. Show me its high and medium
+  findings before you change anything; it only reads, so it is safe to run first.
 - Ask me what is plugged into the TV's USB ports, and ask separately whether the TV's network comes
   through a USB Ethernet adapter: "nothing plugged in" can be true while the network itself is on that
   port. Some devices cut their power while USB debugging is on, so warn me, and remind me to switch
@@ -60,7 +63,10 @@ Back up first
   fell back, and ADB is running over Wi-Fi). Finish the whole job in one sitting, not two: there the
   port only returns with USB debugging off, and that closes port 5555 as well. Prefer Wireless
   debugging if the TV has it.
-- When you finish, close network ADB instead of leaving it open: switch Wireless debugging and
+- When you finish, close network ADB instead of leaving it open. `tools/venv/bin/python -I
+  tools/adb_autoclose.py now` does the switching and the port check below in one step (add
+  `--wireless-port <port>` when Wireless debugging is on, `--keep-usb` if I asked to keep USB
+  debugging); the rest of this step says what it checks: switch Wireless debugging and
   Network/ADB debugging off on the TV (whichever it has), and USB debugging too unless I ask to keep
   it, and revoke the USB debugging authorisations. Wireless debugging has a port of its own and can
   stay open when USB debugging goes off: note that port from `adb mdns services`

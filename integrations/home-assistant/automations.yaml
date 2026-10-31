@@ -1,0 +1,75 @@
+# Example automations for the secure edition's MQTT entities. The entity IDs assume the device name
+# "Living Room TV" (living_room_tv); change them to yours (Settings > Devices > the TV).
+# Replace notify.mobile_app_your_phone with your own notify service.
+
+- id: cleanyourtv_high_event
+  alias: "TV security: tell me about high-severity events"
+  mode: queued
+  triggers:
+    - trigger: mqtt
+      topic: "cleanyourtv/+/event"
+  conditions:
+    - condition: template
+      value_template: "{{ trigger.payload_json.severity | default('') == 'high' }}"
+  actions:
+    - action: notify.mobile_app_your_phone
+      data:
+        title: "TV security: {{ trigger.payload_json.device }}"
+        message: "{{ trigger.payload_json.title }}"
+
+- id: cleanyourtv_close_adb_when_away
+  alias: "TV security: close debugging when everyone leaves"
+  triggers:
+    - trigger: state
+      entity_id: zone.home
+      to: "0"
+  conditions:
+    - condition: state
+      entity_id: binary_sensor.living_room_tv_usb_debugging
+      state: "on"
+  actions:
+    - action: button.press
+      target:
+        entity_id: button.living_room_tv_close_adb
+
+- id: cleanyourtv_network_adb_left_open
+  alias: "TV security: network ADB open for 15 minutes"
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.living_room_tv_network_adb_listening
+      to: "on"
+      for: "00:15:00"
+  actions:
+    - action: notify.mobile_app_your_phone
+      data:
+        title: "TV security"
+        message: "Network ADB on the living room TV has been open for 15 minutes. Close it?"
+        data:
+          actions:
+            - action: CLOSE_TV_ADB
+              title: "Close it"
+
+- id: cleanyourtv_close_from_notification
+  alias: "TV security: close ADB from the phone notification"
+  triggers:
+    - trigger: event
+      event_type: mobile_app_notification_action
+      event_data:
+        action: CLOSE_TV_ADB
+  actions:
+    - action: button.press
+      target:
+        entity_id: button.living_room_tv_close_adb
+
+- id: cleanyourtv_watchdog_offline
+  alias: "TV security: the watchdog stopped reporting"
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.living_room_tv_usb_debugging
+      to: "unavailable"
+      for: "06:00:00"
+  actions:
+    - action: notify.mobile_app_your_phone
+      data:
+        title: "TV security"
+        message: "The living room TV's watchdog has been offline for 6 hours (TV off, or the app was stopped)."
